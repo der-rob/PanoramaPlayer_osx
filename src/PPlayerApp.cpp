@@ -2,96 +2,110 @@
 
 //--------------------------------------------------------------
 void PPlayerApp::setup(){
+	vsync = false;
+	ofBackground(0, 0, 0);
+	ofEnableDepthTest();
+	ofEnableAlphaBlending();
+	ofDisableArbTex();
+	//ofSetFullscreen(true);
+
 	//init variables
 	h = 100;
 	x = y = z = -100;
-	width = height = length = 400;
-
-	fov = 90.0f;
-
+	width = height = length = 16000;
+	fov = 70.0f;
 	rotation = 0.0f;
-    rotation_step = 1.0f;
-
-	center.set(ofGetWidth()*.5, ofGetHeight()*.5, 0);
+	rotation_step = 1.0f;
+	center.set(0,0, 0);
+	x = -width/2;
+	y = -height/2;
+	z = -length/2;
     
-    ofDisableArbTex();
-    ofEnableDepthTest();
+	//initViewPorts();
 	
-    //initial loading of all textures
+	//initial loading of all textures
 	texture_index = 0;
-	scanTextureFolder();  
-
-    //ofEnableTextureEdgeHack();
-    
-    glCullFace(GL_BACK);
-    
-    width = height = length = 16000;
-    
-//    ofAddListener(powermate.tengoInfo, this, &panoGLApp::powermateEvent);
-    camera.setGlobalPosition(0.0f, 0.0f, 0.0f);
-    camera.setFarClip(32000);
-    camera.setFov(fov);
-    camera.disableMouseInput();
-    
-    center.set(0,0, 0);
-    x = -width/2;
-    y = -height/2;
-    z = -length/2;
+	scanTextureFolder();
+	mask_image.allocate(1920,1080, OF_IMAGE_COLOR);
+	mask_image.loadImage("mask.jpg");
+	black_fade_mask = ofRectangle(0,0,ofGetWidth(),ofGetHeight());
+	fade_factor=0.5;
+	
+	camera.setGlobalPosition(0.0f, 0.0f, 0.0f);
+	camera.setFarClip(32000);
+	camera.setFov(fov);
+	camera.disableMouseInput();
 
 	//Arduino stuff
 	potValue = "N/A";
 
-	arduino.connect("COM5", 57600);
-	
-	ofAddListener(arduino.EInitialized, this, &PPlayerApp::setupArduino);
-	bArduinoSetup = false;
+	serial.listDevices();
+	vector <ofSerialDeviceInfo> deviceList = serial.getDeviceList();
+	serial.setup(deviceList[1].getDeviceName(),9600);
+
+	cout << "===" << endl;
+	cout << ofToString(InitVSync()) << endl;
+	cout << ofToString(SetVSync(true)) << endl;
+	cout << "===" << endl;
 }
 
 //--------------------------------------------------------------
 void PPlayerApp::update(){
-	 camera.setFov(fov);
-	 updateArduino();
+	camera.setFov(fov);
+	updateSerial();
 }
 
 //--------------------------------------------------------------
-void PPlayerApp::setupArduino(const int &version) {
-
-	//ofRemoveListener(arduino.EInitialized, this, &PPlayerApp::setupArduino);
-	bArduinoSetup = true;
-
-	ofLogNotice() << arduino.getFirmwareName();
-	ofLogNotice() << "firmata v" << arduino.getMajorFirmwareVersion() << "." << arduino.getMinorFirmwareVersion();
-	
-	//arduino smoothing
-	index = total = average = 0;
-	for (int thisReading = 0; thisReading < numReadings; thisReading++)
-		readings[thisReading] = 0;
-	
-	arduino.sendAnalogPinReporting(0, ARD_ANALOG);
-	arduino.sendDigitalPinMode(7,ARD_INPUT);
-	arduino.sendDigitalPinMode(8,ARD_INPUT);
-	
-	ofAddListener(arduino.EAnalogPinChanged, this, &PPlayerApp::analogPinChanged);
-	ofAddListener(arduino.EDigitalPinChanged, this, &PPlayerApp::digitalPinChanged);
+string PPlayerApp::trimStringRight(string str) {
+	size_t endpos = str.find_last_not_of(" \t\r\n");
+	return (string::npos != endpos) ? str.substr( 0, endpos+1) : str;
 }
-
+// trim trailing spaces
+string PPlayerApp::trimStringLeft(string str) {
+	size_t startpos = str.find_first_not_of(" \t\r\n");
+	return (string::npos != startpos) ? str.substr(startpos) : str;
+}
+string PPlayerApp::trimString(string str) {
+	return trimStringLeft(trimStringRight(str));
+}
+string PPlayerApp::getSerialString(ofSerial &the_serial, char until) {
+	static string str;
+	stringstream ss;
+	char ch;
+	int ttl=1000;
+	ch=the_serial.readByte();
+	while (ch > 0 && ttl >= 0 && ch!=until) {
+		ss << ch;
+		ch=the_serial.readByte();
+	}
+	str+=ss.str();
+	if (ch==until) {
+		string tmp=str;
+		str="";
+		return trimString(tmp);
+	} else {
+		return "";
+	}
+}
 //--------------------------------------------------------------
-void PPlayerApp::updateArduino() {
-	arduino.update();
+void PPlayerApp::updateSerial() {
+	int sensorValue, button1, button2;
+	// Receive String from Arduino
+	string str;
+	string substring;
+	do {
+		str = getSerialString(serial,'\n'); //read until end of line
+		
+		if (str=="") continue;
+		
+		size_t pos = str.find_first_of(',');
+		substring = str.substr(0, pos);
+		sensorValue = atoi(substring.c_str());
+		rotation = ofMap(sensorValue,0,1023,180,270);
+		fade_factor = ofMap(sensorValue,0,1023,0,1);
+	} while (str!="");
 }
 
-//--------------------------------------------------------------
-void PPlayerApp::analogPinChanged(const int & pinNum) {
-	total = total - readings[index];
-	readings[index] = arduino.getAnalog(pinNum);
-	total = total + readings[index];
-	index++;
-	index = index % numReadings;
-	average = total / numReadings;
-
-	potValue = ofToString(average);
-	rotation = ofMap(average, 0, 1023, 30, 330);
-}
 //--------------------------------------------------------------
 void PPlayerApp::digitalPinChanged(const int & pinNum) {
 	//since every button press means two changes on the pin, we need to differentiate between press and release
@@ -103,15 +117,14 @@ void PPlayerApp::digitalPinChanged(const int & pinNum) {
 	{
 	case 7:
 		if (arduino.getDigital(pinNum) == ARD_HIGH) {
-		cout << ofToString(ofGetElapsedTimeMillis()) << ": " << pinNum << " | pressed" << endl;
-		ofToggleFullscreen();
+			ofToggleFullscreen();
 		}
 		break;
 	case 8:
 		if (arduino.getDigital(pinNum) == ARD_HIGH) {
-		cout << ofToString(ofGetElapsedTimeMillis()) << ": " << pinNum << " | pressed" << endl;
-		cycleTextures();
-		cout << "Texture index: " << texture_index << endl;
+			cout << ofToString(ofGetElapsedTimeMillis()) << ": " << pinNum << " | pressed" << endl;
+			cycleTextures();
+			cout << "Texture index: " << texture_index << endl;
 		}
 		break;
 	default:
@@ -122,112 +135,142 @@ void PPlayerApp::digitalPinChanged(const int & pinNum) {
 			cout << "No action specified for pin " << pinNum << "|released." << endl;
 		}
 		break;
-	}	
+	}
 }
 //--------------------------------------------------------------
 void PPlayerApp::draw(){
-	camera.begin();
-    
-    ofPushMatrix();
-    ofTranslate(center.x, center.y,0);
-    ofRotate(rotation, 0, 1, 0);
-
-//	all_panoramas[texture_index][0].getTextureReference().bind();
-//	all_panoramas[texture_index][0].getTextureReference().unbind();
-
-	// Draw Front side
-	all_panoramas[texture_index][0].getTextureReference().bind();
-    glBegin(GL_QUADS);
-    glTexCoord2f(1.0f, 1.0f); glVertex3f(x, y, z+length);
-    glTexCoord2f(1.0f, 0.0f); glVertex3f(x, y+height, z+length);
-    glTexCoord2f(0.0f, 0.0f); glVertex3f(x+width, y+height, z+length);
-    glTexCoord2f(0.0f, 1.0f); glVertex3f(x+width, y, z+length);
-    glEnd();
-    all_panoramas[texture_index][0].getTextureReference().unbind();
-    
-    // Draw Back side
-	all_panoramas[texture_index][1].getTextureReference().bind();
-    glBegin(GL_QUADS);
-    glTexCoord2f(1.0f, 1.0f); glVertex3f(x+width, y, z);
-    glTexCoord2f(1.0f, 0.0f); glVertex3f(x+width, y+height, z);
-    glTexCoord2f(0.0f, 0.0f); glVertex3f(x, y+height, z);
-    glTexCoord2f(0.0f, 1.0f); glVertex3f(x, y, z);
-    glEnd();
-    all_panoramas[texture_index][1].getTextureReference().unbind();
-    
-    // Draw up side
-    all_panoramas[texture_index][2].getTextureReference().bind();
-    glBegin(GL_QUADS);
-    glTexCoord2f(0.0f, 0.0f); glVertex3f(x+width, y+height, z);
-    glTexCoord2f(0.0f, 1.0f); glVertex3f(x+width, y+height, z+length);
-    glTexCoord2f(1.0f, 1.0f); glVertex3f(x, y+height, z+length);
-    glTexCoord2f(1.0f, 0.0f); glVertex3f(x, y+height, z);
-    glEnd();
-    all_panoramas[texture_index][2].getTextureReference().unbind();
-
-	// Draw down side
-    all_panoramas[texture_index][3].getTextureReference().bind();
-    glBegin(GL_QUADS);
-    glTexCoord2f(1.0f, 1.0f); glVertex3f(x, y, z);
-    glTexCoord2f(1.0f, 0.0f); glVertex3f(x, y, z+length);
-    glTexCoord2f(0.0f, 0.0f); glVertex3f(x+width, y, z+length);
-    glTexCoord2f(0.0f, 1.0f); glVertex3f(x+width, y, z);
-    glEnd();
-    all_panoramas[texture_index][3].getTextureReference().unbind();
-    
-    // Draw Left side
-    all_panoramas[texture_index][4].getTextureReference().bind();
-    glBegin(GL_QUADS);
-    glTexCoord2f(0.0f, 1.0f); glVertex3f(x+width, y, z);
-    glTexCoord2f(1.0f, 1.0f); glVertex3f(x+width, y, z+length);
-    glTexCoord2f(1.0f, 0.0f); glVertex3f(x+width, y+height, z+length);
-    glTexCoord2f(0.0f, 0.0f); glVertex3f(x+width, y+height, z);
-    glEnd();
-    all_panoramas[texture_index][4].getTextureReference().unbind();
-    
-    // Draw Right side
-    all_panoramas[texture_index][5].getTextureReference().bind();
-    glBegin(GL_QUADS);
-	glTexCoord2f(1.0f, 0.0f); glVertex3f(x, y+height, z);
-    glTexCoord2f(0.0f, 0.0f); glVertex3f(x, y+height, z+length);
-    glTexCoord2f(0.0f, 1.0f); glVertex3f(x, y, z+length);
-    glTexCoord2f(1.0f, 1.0f); glVertex3f(x, y, z);
-    glEnd();
-    all_panoramas[texture_index][5].getTextureReference().unbind();
-    
-    ofPopMatrix();
-    camera.end();
-    
-    ofSetColor(255, 255, 255);
 	string msg ="";
-	msg += "Field of View \t\t" + ofToString(fov) + "\n";
-    msg += "Rotation \t\t" + ofToString(rotation) + "\n";
-    msg += "Rotation step \t\t " + ofToString(rotation_step) + "\n";
-	msg += "Potentiometer \t\t " + potValue + "\n";
-	msg += "Panorama \t\t" + ofToString(texture_index);
+	
+	if (texture_index >= 0) {
+		/*
+		for (int v = 0; v < viewports.size(); v++)
+		{*/
+			//camera.begin(viewports[v]);
+			//texture_index = v;	
+			
+			camera.begin();
+			ofPushMatrix();
+			ofTranslate(center.x, center.y,0);
+			ofRotate(rotation, 0, 1, 0);
+
+			all_panoramas[texture_index][0].getTextureReference().bind();
+			all_panoramas[texture_index][0].getTextureReference().unbind();
+
+			// Draw Front side
+			all_panoramas[texture_index][0].getTextureReference().bind();
+
+			glBegin(GL_QUADS);
+			glTexCoord2f(1.0f, 1.0f); glVertex3f(x, y, z+length);
+			glTexCoord2f(1.0f, 0.0f); glVertex3f(x, y+height, z+length);
+			glTexCoord2f(0.0f, 0.0f); glVertex3f(x+width, y+height, z+length);
+			glTexCoord2f(0.0f, 1.0f); glVertex3f(x+width, y, z+length);
+			glEnd();
+			all_panoramas[texture_index][0].getTextureReference().unbind();
+
+			// Draw Back side
+			all_panoramas[texture_index][1].getTextureReference().bind();
+			glBegin(GL_QUADS);
+			glTexCoord2f(1.0f, 1.0f); glVertex3f(x+width, y, z);
+			glTexCoord2f(1.0f, 0.0f); glVertex3f(x+width, y+height, z);
+			glTexCoord2f(0.0f, 0.0f); glVertex3f(x, y+height, z);
+			glTexCoord2f(0.0f, 1.0f); glVertex3f(x, y, z);
+			glEnd();
+			all_panoramas[texture_index][1].getTextureReference().unbind();
+
+			// Draw up side
+			all_panoramas[texture_index][2].getTextureReference().bind();
+			glBegin(GL_QUADS);
+			glTexCoord2f(0.0f, 0.0f); glVertex3f(x+width, y+height, z);
+			glTexCoord2f(0.0f, 1.0f); glVertex3f(x+width, y+height, z+length);
+			glTexCoord2f(1.0f, 1.0f); glVertex3f(x, y+height, z+length);
+			glTexCoord2f(1.0f, 0.0f); glVertex3f(x, y+height, z);
+			glEnd();
+			all_panoramas[texture_index][2].getTextureReference().unbind();
+
+			// Draw down side
+			all_panoramas[texture_index][3].getTextureReference().bind();
+			glBegin(GL_QUADS);
+			glTexCoord2f(1.0f, 1.0f); glVertex3f(x, y, z);
+			glTexCoord2f(1.0f, 0.0f); glVertex3f(x, y, z+length);
+			glTexCoord2f(0.0f, 0.0f); glVertex3f(x+width, y, z+length);
+			glTexCoord2f(0.0f, 1.0f); glVertex3f(x+width, y, z);
+			glEnd();
+			all_panoramas[texture_index][4].getTextureReference().unbind();
+
+			// Draw Left side
+			all_panoramas[texture_index][4].getTextureReference().bind();
+			glBegin(GL_QUADS);
+			glTexCoord2f(0.0f, 1.0f); glVertex3f(x+width, y, z);
+			glTexCoord2f(1.0f, 1.0f); glVertex3f(x+width, y, z+length);
+			glTexCoord2f(1.0f, 0.0f); glVertex3f(x+width, y+height, z+length);
+			glTexCoord2f(0.0f, 0.0f); glVertex3f(x+width, y+height, z);
+			glEnd();
+			all_panoramas[texture_index][4].getTextureReference().unbind();
+
+			// Draw Right side
+			all_panoramas[texture_index][5].getTextureReference().bind();
+			glBegin(GL_QUADS);
+			glTexCoord2f(1.0f, 0.0f); glVertex3f(x, y+height, z);
+			glTexCoord2f(0.0f, 0.0f); glVertex3f(x, y+height, z+length);
+			glTexCoord2f(0.0f, 1.0f); glVertex3f(x, y, z+length);
+			glTexCoord2f(1.0f, 1.0f); glVertex3f(x, y, z);
+			glEnd();
+			all_panoramas[texture_index][5].getTextureReference().unbind();
+
+			ofPopMatrix();
+			camera.end();
+			
+		//}
+		msg += "Field of View \t\t" + ofToString(fov) + "\n";
+		msg += "Rotation \t\t" + ofToString(rotation) + "\n";
+		msg += "Rotation step \t\t " + ofToString(rotation_step) + "\n";
+		msg += "Potentiometer \t\t " + potValue + "\n";
+		msg += "Panorama \t\t" + ofToString(texture_index) + "\n";
+		msg += "FPS: \t\t" + ofToString(ofGetFrameRate());
+	} else {
+		msg = "No Textures loaded!";
+	}
+	
+	//glEnable(GL_BLEND);
+	//glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	//ofMatrixMode(OF_MATRIX_PROJECTION);
+	//glColor4f(0,0,0,fade_factor);
+	//ofRect(ofRectangle(0,0,ofGetWidth()/2.0,ofGetHeight()/2.0));
+	//
+	
+
+	//draw a mask
+	ofPushMatrix();
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_ZERO,GL_SRC_COLOR);
+	mask_image.draw(0.0f, 0.0f, ofGetWidth(), ofGetHeight());
+	ofPopMatrix();
+	glDisable(GL_BLEND);
 	ofDrawBitmapStringHighlight(msg, 50, 50);
 }
 
 //--------------------------------------------------------------
 void PPlayerApp::keyPressed(int key){
 	if (key == OF_KEY_LEFT)
-    {
-        rotation_step -= 0.1f;
-    }
-    else if (key == OF_KEY_RIGHT)
-    {
-        rotation_step += 0.1f;
-    }
-    else if ( key == OF_KEY_UP )
-        fov += 10.0;
-    else if (key == OF_KEY_DOWN)
-        fov -= 10.0f;
-    else if ( key == 'f')
-        ofToggleFullscreen();
-    else if (key == 'a')
-        rotation -=rotation_step;
-    else if (key == 'd')
-        rotation +=rotation_step;
+	{
+		rotation_step -= 0.1f;
+	}
+	else if (key == OF_KEY_RIGHT)
+	{
+		rotation_step += 0.1f;
+	}
+	else if ( key == OF_KEY_UP )
+		fov += 10.0;
+	else if (key == OF_KEY_DOWN)
+		fov -= 10.0f;
+	else if ( key == 'f'){
+		ofToggleFullscreen();
+		//initViewPorts();
+	}
+	else if (key == 'a')
+		rotation -=rotation_step;
+	else if (key == 'd')
+		rotation +=rotation_step;
 	else if (key == 'r')
 		arduino.sendReset();
 }
@@ -268,7 +311,7 @@ void PPlayerApp::gotMessage(ofMessage msg){
 }
 
 //--------------------------------------------------------------
-void PPlayerApp::dragEvent(ofDragInfo dragInfo){ 
+void PPlayerApp::dragEvent(ofDragInfo dragInfo){
 
 }
 
@@ -305,7 +348,7 @@ void PPlayerApp::scanTextureFolder() {
 					for (int j = 0; j < picCount; j++){
 						string sub_key_name = "picture["+ofToString(j)+"][@id="+ofToString(j)+"]/name";
 						if (panorama.exists(sub_key_name)) {
-							string name = panorama.getValue(sub_key_name);
+							string name = picSubDirPath + "\\" + panorama.getValue(sub_key_name);
 							this_panorama_filenames.push_back(name);
 							//cout << name << endl;
 						} else {
@@ -332,21 +375,27 @@ void PPlayerApp::scanTextureFolder() {
 	}
 
 	//load the textures
-	for (int i = 0; i < all_panorama_filenames.size(); i++) {
-		vector <ofImage> this_panorama;
-		for (int j = 0; j < all_panorama_filenames[i].size(); j++) {
-			ofImage picture;
-			if (picture.loadImage(all_panorama_filenames[i][j].c_str()))
-				this_panorama.push_back(picture);
+	if (all_panorama_filenames.size() >= 1) {
+		cout << "Panoramas to load: " << all_panorama_filenames.size() << endl;
+		for (int i = 0; i < all_panorama_filenames.size(); i++) {
+			vector <ofImage> this_panorama;
+			for (int j = 0; j < all_panorama_filenames[i].size(); j++) {
+				ofImage picture;
+				cout << all_panorama_filenames[i][j].c_str() << endl;
+				if (picture.loadImage(all_panorama_filenames[i][j].c_str()))
+					this_panorama.push_back(picture);
+			}
+			//only add if all pictures are loaded correctly
+			if (this_panorama.size() == 6)
+			{
+				all_panoramas.push_back(this_panorama);
+				cout << "Loaded " << all_panoramas.size() << endl;
+			}
 		}
-		//only add if all pictures are loaded correctly
-		if (this_panorama.size() == 6)
-			all_panoramas.push_back(this_panorama);
 	}
-
-	texture_index = 0;
-//	if (all_panoramas.size() > 0)
-//		current_panorama = (ofImage**) &all_panoramas[texture_index];
+	if (all_panoramas.size() >=1)
+		texture_index = 0;
+	else texture_index = -1;
 }
 
 //--------------------------------------------------------------
@@ -355,3 +404,25 @@ void PPlayerApp::cycleTextures(){
 	//to avoid bad accesses
 	texture_index = texture_index % all_panoramas.size();
 }
+/*
+//--------------------------------------------------------------
+bool PPlayerApp::initViewPorts() {
+	float _width = ofGetWidth();
+	float _height = ofGetHeight();
+	int _x,_y;
+	ofVec2f midpoint;
+	float angle_rad = 72*(PI/180);
+	float radius = _width/(2*tan(angle_rad));
+	midpoint = ofVec2f(_width/2.0, _height + radius);
+	cout << midpoint << endl;
+	// calculate midpoint for pentagon
+	viewports.clear();
+	for (int i = 0; i<5; i++)
+	{
+		ofRectangle rect = ofRectangle(i * _width, 0, _width, _height);
+		viewports.push_back(rect);
+	}
+
+	return true;
+}
+*/
